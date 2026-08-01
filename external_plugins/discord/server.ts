@@ -881,9 +881,18 @@ async function handleInbound(msg: Message): Promise<void> {
 
   // Permission-reply intercept: if this looks like "yes xxxxx" for a
   // pending permission request, emit the structured event instead of
-  // relaying as chat. The sender is already gate()-approved at this point
-  // (non-allowlisted senders were dropped above), so we trust the reply.
-  const permMatch = PERMISSION_REPLY_RE.exec(msg.content)
+  // relaying as chat.
+  //
+  // "gate()-approved implies allowlisted" stopped being true when allowBots
+  // was added: a bot now clears gate() without appearing in allowFrom. So
+  // require allowFrom explicitly here, mirroring what the button handler
+  // already does. An agent must never be able to approve a tool permission
+  // on the user's behalf — it is the one reply in this protocol that grants
+  // capability rather than conveying information.
+  const permMatch =
+    !msg.author.bot && result.access.allowFrom.includes(msg.author.id)
+      ? PERMISSION_REPLY_RE.exec(msg.content)
+      : null
   if (permMatch) {
     void mcp.notification({
       method: 'notifications/claude/channel/permission',
