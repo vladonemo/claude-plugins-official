@@ -4,7 +4,8 @@
  *
  * Self-contained MCP server with full access control: pairing, allowlists,
  * guild-channel support with mention-triggering. State lives in
- * ~/.claude/channels/discord/access.json — managed by the /discord:access skill.
+ * $DISCORD_STATE_DIR/access.json (default ~/.claude/channels/discord/) —
+ * managed by the /discord:access skill.
  *
  * Discord's search API isn't exposed to bots — fetch_messages is the only
  * lookback, and the instructions tell the model this.
