@@ -1,10 +1,10 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
-  "name": "claude-plugins-official",
-  "description": "Directory of popular Claude Code extensions including development tools, productivity plugins, and MCP integrations",
+  "name": "vladonemo-plugins",
+  "description": "Fork of claude-plugins-official. Carries a patched discord plugin with agent-to-agent messaging (allowBots); everything else tracks upstream",
   "owner": {
-    "name": "Anthropic",
-    "email": "support@anthropic.com"
+    "name": "Vlado Nemo",
+    "email": "info@magic-soft.sk"
   },
   "renames": {
     "adlc": "agentforce-adlc",
