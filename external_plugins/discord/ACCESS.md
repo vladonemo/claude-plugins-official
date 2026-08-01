@@ -58,6 +58,34 @@ With the default `requireMention: true`, the bot responds only when @mentioned o
 /discord:access group rm 846209781206941736
 ```
 
+## Other bots
+
+Messages from bots are ignored unless the sender's user ID appears in the
+top-level `allowBots` array. It defaults to `[]`, so out of the box no bot can
+reach another — the historical behaviour.
+
+```jsonc
+"allowBots": ["1533049017460723822"]
+```
+
+`allowBots` decides only whether a bot is a candidate. Everything else still
+applies: a bot in a guild channel must clear that channel's registration,
+`allowFrom` and `requireMention` exactly as a human would.
+
+Because the array is per-bot, topology is expressed by who lists whom. To let
+an orchestrator talk to a fleet without the fleet talking among itself, give
+each worker `allowBots: ["<orchestrator id>"]` and give the orchestrator the
+workers' IDs. No worker lists another worker, so no worker can wake one.
+
+**Never list a bot's own ID.** It has no effect — the handler ignores the
+bot's own messages before this check, deliberately and unconditionally —
+because anything else is an infinite self-loop.
+
+Bot senders are additionally rate-limited to 5 messages per channel per 10
+minutes (`BOT_MAX_PER_WINDOW`, `BOT_WINDOW_MS` in `server.ts`). Exceeding it
+drops the message and logs to stderr. This is a backstop against two bots
+answering each other indefinitely; it is not a substitute for a sane topology.
+
 ## Mention detection
 
 In channels with `requireMention: true`, any of the following triggers the bot:
@@ -105,7 +133,14 @@ Configure outbound behavior with `/discord:access set <key> <value>`.
 
 ## Config file
 
-`~/.claude/channels/discord/access.json`. Absent file is equivalent to `pairing` policy with empty lists, so the first DM triggers pairing.
+`$DISCORD_STATE_DIR/access.json`, defaulting to
+`~/.claude/channels/discord/access.json`. Absent file is equivalent to
+`pairing` policy with empty lists, so the first DM triggers pairing.
+
+> Running more than one bot means more than one state directory — each session
+> sets its own `DISCORD_STATE_DIR`. Edit the file the *target bot's* server
+> actually reads; the `/discord:access` skill assumes the default path and will
+> silently write to the wrong file otherwise.
 
 ```jsonc
 {
@@ -114,6 +149,10 @@ Configure outbound behavior with `/discord:access set <key> <value>`.
 
   // User snowflakes allowed to DM.
   "allowFrom": ["184695080709324800"],
+
+  // Bot user snowflakes allowed to wake this bot. Empty = no bot can.
+  // Never include this bot's own ID.
+  "allowBots": [],
 
   // Guild channels the bot is active in. Empty object = DM-only.
   "groups": {

@@ -108,6 +108,12 @@ type Access = {
   /** Keyed on channel ID (snowflake), not guild ID. One entry per guild channel. */
   groups: Record<string, GroupPolicy>
   pending: Record<string, PendingEntry>
+  /**
+   * Bot user IDs allowed to wake this bot. Empty (the default) means no bot can,
+   * which is the historical behaviour. Never include this bot's own ID — the
+   * self-check in the messageCreate handler is deliberately not overridable.
+   */
+  allowBots: string[]
   mentionPatterns?: string[]
   // delivery/UX config — optional, defaults live in the reply handler
   /** Emoji to react with on receipt. Empty string disables. Unicode char or custom emoji ID. */
@@ -126,6 +132,7 @@ function defaultAccess(): Access {
     allowFrom: [],
     groups: {},
     pending: {},
+    allowBots: [],
   }
 }
 
@@ -157,6 +164,7 @@ function readAccessFile(): Access {
       allowFrom: parsed.allowFrom ?? [],
       groups: parsed.groups ?? {},
       pending: parsed.pending ?? {},
+      allowBots: parsed.allowBots ?? [],
       mentionPatterns: parsed.mentionPatterns,
       ackReaction: parsed.ackReaction,
       replyToMode: parsed.replyToMode,
@@ -233,6 +241,26 @@ function noteSent(id: string): void {
   }
 }
 
+// Loop breaker for bot→bot traffic. The intended topology is hub-and-spoke —
+// spokes only accept the orchestrator, so the tightest possible cycle is
+// orchestrator ↔ one spoke — and the orchestrator's own prompt is meant to
+// cut that. This is the backstop for when it doesn't: a prompt-level rule can
+// be reasoned past, server code cannot. In-memory on purpose; a restart
+// clearing the counters is fine.
+const BOT_WINDOW_MS = 10 * 60 * 1000
+const BOT_MAX_PER_WINDOW = 5
+const botHits = new Map<string, number[]>()
+
+function botRateOk(channelId: string, authorId: string): boolean {
+  const key = `${channelId}:${authorId}`
+  const now = Date.now()
+  const hits = (botHits.get(key) ?? []).filter(t => now - t < BOT_WINDOW_MS)
+  botHits.set(key, hits)
+  if (hits.length >= BOT_MAX_PER_WINDOW) return false
+  hits.push(now)
+  return true
+}
+
 async function gate(msg: Message): Promise<GateResult> {
   const access = loadAccess()
   const pruned = pruneExpired(access)
@@ -242,6 +270,21 @@ async function gate(msg: Message): Promise<GateResult> {
 
   const senderId = msg.author.id
   const isDM = msg.channel.type === ChannelType.DM
+
+  // Bot authors are gated by allowBots, then rate-limited. Everything below
+  // still applies to them: a bot must also clear the DM policy or the group's
+  // registration, allowFrom and requireMention. This only decides whether a
+  // bot is a candidate at all.
+  if (msg.author.bot) {
+    if (!access.allowBots.includes(senderId)) return { action: 'drop' }
+    if (!botRateOk(msg.channelId, senderId)) {
+      process.stderr.write(
+        `discord: bot ${senderId} rate-limited in ${msg.channelId} ` +
+          `(>${BOT_MAX_PER_WINDOW} msgs/${BOT_WINDOW_MS / 60000}min)\n`,
+      )
+      return { action: 'drop' }
+    }
+  }
 
   if (isDM) {
     if (access.allowFrom.includes(senderId)) return { action: 'deliver', access }
@@ -803,7 +846,12 @@ client.on('interactionCreate', async (interaction: Interaction) => {
 })
 
 client.on('messageCreate', msg => {
-  if (msg.author.bot) return
+  // Never react to our own messages. This must stay unconditional and must not
+  // become configurable: a bot's own messages have author.bot === true, so
+  // before allowBots existed this single line was doing double duty as the
+  // self-check. Anything that lets a bot's own ID through here is an infinite
+  // self-loop — it wakes on its own reply, replies, and wakes again.
+  if (msg.author.id === client.user?.id) return
   handleInbound(msg).catch(e => process.stderr.write(`discord: handleInbound failed: ${e}\n`))
 })
 
