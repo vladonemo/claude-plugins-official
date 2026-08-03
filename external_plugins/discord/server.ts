@@ -928,9 +928,37 @@ async function handleInbound(msg: Message): Promise<void> {
     atts.push(`${safeAttName(att)} (${att.contentType ?? 'unknown'}, ${kb}KB)`)
   }
 
+  // Forwarded messages carry nothing in `content` — Discord puts the body in
+  // message_snapshots instead. Without this a forward arrives blank and is
+  // indistinguishable from someone sending an empty message by accident.
+  //
+  // A snapshot deliberately omits the original author, so we cannot say who
+  // wrote it, only that it was forwarded. Its attachments live on the original
+  // message, which download_attachment(chat_id, message_id) cannot reach — they
+  // are listed so the model knows they exist, and marked as unfetchable.
+  const fwdBodies: string[] = []
+  const fwdAtts: string[] = []
+  for (const snap of msg.messageSnapshots.values()) {
+    if (snap.content) fwdBodies.push(snap.content)
+    for (const att of snap.attachments.values()) {
+      const kb = (att.size / 1024).toFixed(0)
+      fwdAtts.push(`${safeAttName(att)} (${att.contentType ?? 'unknown'}, ${kb}KB)`)
+    }
+    if (snap.content === '' && snap.attachments.size === 0 && snap.embeds.length > 0) {
+      fwdBodies.push(`(forwarded embed, ${snap.embeds.length})`)
+    }
+  }
+
   // Attachment listing goes in meta only — an in-content annotation is
-  // forgeable by any allowlisted sender typing that string.
-  const content = msg.content || (atts.length > 0 ? '(attachment)' : '')
+  // forgeable by any allowlisted sender typing that string. The same applies to
+  // the separator below: it is a readability aid, and `forwarded` in meta is
+  // the part that cannot be faked by a sender.
+  const parts: string[] = []
+  if (msg.content) parts.push(msg.content)
+  if (fwdBodies.length > 0) parts.push(`--- forwarded ---\n${fwdBodies.join('\n\n')}`)
+  const content =
+    parts.join('\n\n') ||
+    (atts.length > 0 || fwdAtts.length > 0 ? '(attachment)' : '')
 
   mcp.notification({
     method: 'notifications/claude/channel',
@@ -943,6 +971,14 @@ async function handleInbound(msg: Message): Promise<void> {
         user_id: msg.author.id,
         ts: msg.createdAt.toISOString(),
         ...(atts.length > 0 ? { attachment_count: String(atts.length), attachments: atts.join('; ') } : {}),
+        ...(msg.messageSnapshots.size > 0
+          ? {
+              forwarded: String(msg.messageSnapshots.size),
+              ...(fwdAtts.length > 0
+                ? { forwarded_attachments: `${fwdAtts.join('; ')} (on the original message — not fetchable via download_attachment)` }
+                : {}),
+            }
+          : {}),
       },
     },
   }).catch(err => {
