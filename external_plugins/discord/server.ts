@@ -450,8 +450,53 @@ async function fetchAllowedChannel(id: string) {
   const ch = await fetchTextChannel(id)
   const access = loadAccess()
   if (ch.type === ChannelType.DM) {
-    const userId = ch.recipientId ?? dmChannelUsers.get(id)
+    // Resolving "who is the human on the other end of this DM" has three
+    // sources, none of them individually trustworthy:
+    //
+    //   1. dmChannelUsers — the author of a real inbound message. Correct when
+    //      present, but in-memory, so empty after any restart.
+    //   2. ch.recipientId — can be UNSET or WRONG:
+    //        unset: DMChannel._patch assigns it only `if (data.recipients)`, and
+    //          a DM known from a gateway event carries none. channels.fetch()
+    //          then returns that cached object without asking Discord.
+    //        wrong: sending a DM patches the cached channel with a recipients
+    //          array whose first entry is US. It is truthy, so a plain `??`
+    //          prefers it over source 1, and a bot is never in its own
+    //          allowFrom — so a legitimate reply is refused.
+    //   3. A forced REST fetch — authoritative, but a round-trip.
+    //
+    // Source 2 being wrong is what made replies fail while the DM itself was
+    // fine, and why it reproduced only in manual permission mode: that mode
+    // sends a permission-request DM, which is what poisons the cached channel.
+    // Auto mode sends none, so the value stayed clean and replies worked.
+    //
+    // Hence: prefer the observed author, never accept our own id from any
+    // source, and fall back to Discord. The REST result is cached, so this
+    // costs one round-trip per channel per process at most.
+    const selfId = client.user?.id
+    const notSelf = (v?: string | null): string | undefined =>
+      v && v !== selfId ? v : undefined
+
+    let userId = notSelf(dmChannelUsers.get(id)) ?? notSelf(ch.recipientId)
+
+    if (!userId) {
+      const fresh: any = await client.channels.fetch(id, { force: true })
+      if (fresh && fresh.type === ChannelType.DM) {
+        userId = notSelf(fresh.recipientId)
+        if (userId) dmChannelUsers.set(id, userId)
+      }
+    }
+
     if (userId && access.allowFrom.includes(userId)) return ch
+
+    // Deliberately distinct from the group message below. For a DM, `groups`
+    // is never consulted, so telling the user to add the channel there sends
+    // them to edit an access file that cannot fix it — which is exactly what
+    // the old shared message did.
+    throw new Error(
+      `DM ${id} is not allowlisted — its recipient is not in allowFrom. ` +
+        `Pair or allow that user via /discord:access (adding the channel to groups will not help).`,
+    )
   } else {
     const key = ch.isThread() ? ch.parentId ?? ch.id : ch.id
     if (key in access.groups) return ch
